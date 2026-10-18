@@ -15,7 +15,8 @@ export default defineConfig({
       NEXT_PUBLIC_SUPABASE_URL: "",
       NEXT_PUBLIC_SUPABASE_ANON_KEY: "",
       LOOPPILOT_TEST_BUILD_DIR: ".next-preview",
-      LOOPPILOT_CHATGPT_LOCAL: "0",
+      LOOPPILOT_CHATGPT_LOCAL: "1",
+      LOOPPILOT_LOCAL_ORIGIN: "http://127.0.0.1:3003",
     },
   },
   projects: [

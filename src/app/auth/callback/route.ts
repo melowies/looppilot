@@ -3,7 +3,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export async function GET(request: Request) {
   try {
-    requireLocal(request);
+    requireLocal(request, false, true);
   } catch {
     return new Response(
       "Open this callback on the configured local LoopPilot server.",
@@ -18,6 +18,7 @@ export async function GET(request: Request) {
       ?.slice("looppilot-oauth=".length) ?? "";
   let success = true;
   try {
+    if (!browser) throw new Error("Missing browser binding.");
     await chatgptSessions.callback(new URL(request.url).searchParams, browser);
   } catch {
     success = false;

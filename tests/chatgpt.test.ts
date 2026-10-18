@@ -537,6 +537,53 @@ describe("local session lifecycle", () => {
       );
   });
   afterEach(() => vi.unstubAllEnvs());
+  it("allows cross-site OAuth GET returns only on the callback while retaining ordinary route protections", () => {
+    vi.stubEnv("LOOPPILOT_CHATGPT_LOCAL", "1");
+    vi.stubEnv("LOOPPILOT_LOCAL_ORIGIN", origin.origin);
+    const returned = new Request("http://localhost:3000/auth/callback", {
+      headers: { host: "127.0.0.1:3000", "sec-fetch-site": "cross-site" },
+    });
+    expect(() => requireLocal(returned, false, true)).not.toThrow();
+    expect(() => requireLocal(returned)).toThrow();
+    const settings = new Request("http://localhost:3000/api/ai/settings", {
+      headers: { host: "127.0.0.1:3000", "sec-fetch-site": "cross-site" },
+    });
+    expect(() => requireLocal(settings, false, true)).toThrow();
+    const post = new Request(returned, { method: "POST" });
+    expect(() => requireLocal(post, true, true)).toThrow();
+  });
+  it("accepts Next.js internal loopback normalization while enforcing the browser host, origin, scheme and port", () => {
+    vi.stubEnv("LOOPPILOT_CHATGPT_LOCAL", "1");
+    vi.stubEnv("LOOPPILOT_LOCAL_ORIGIN", origin.origin);
+    const request = (
+      url = "http://localhost:3000/api/ai/settings",
+      host = "127.0.0.1:3000",
+      browserOrigin = origin.origin,
+    ) =>
+      new Request(url, {
+        method: "POST",
+        headers: { host, origin: browserOrigin },
+      });
+    expect(() => requireLocal(request(), true)).not.toThrow();
+    expect(() =>
+      requireLocal(request(undefined, "localhost:3000"), true),
+    ).toThrow();
+    expect(() =>
+      requireLocal(
+        request(undefined, undefined, "http://localhost:3000"),
+        true,
+      ),
+    ).toThrow();
+    expect(() =>
+      requireLocal(request("http://localhost:3001/api/ai/settings"), true),
+    ).toThrow();
+    expect(() =>
+      requireLocal(request("https://localhost:3000/api/ai/settings"), true),
+    ).toThrow();
+    expect(() =>
+      requireLocal(request("http://attacker.test:3000/api/ai/settings"), true),
+    ).toThrow();
+  });
   it("rejects cross-origin, remote and disabled local management requests", () => {
     vi.stubEnv("LOOPPILOT_CHATGPT_LOCAL", "1");
     vi.stubEnv("LOOPPILOT_LOCAL_ORIGIN", origin.origin);

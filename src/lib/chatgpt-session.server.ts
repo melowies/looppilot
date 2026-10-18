@@ -93,28 +93,57 @@ export function trackChatGPTRequest(profileId: string) {
   };
 }
 
-export function requireLocal(request: Request, mutation = false) {
+export function requireLocal(
+  request: Request,
+  mutation = false,
+  oauthCallback = false,
+) {
   const expected = new URL(
     process.env.LOOPPILOT_LOCAL_ORIGIN || "http://127.0.0.1:3000",
   );
   const url = new URL(request.url);
+  if (process.env.LOOPPILOT_CHATGPT_LOCAL !== "1")
+    throw new ChatGPTError(
+      "local_disabled",
+      "Local ChatGPT mode is disabled in this server process. Set LOOPPILOT_CHATGPT_LOCAL=1 in .env.local and restart the LoopPilot server.",
+      403,
+    );
   if (
-    process.env.LOOPPILOT_CHATGPT_LOCAL !== "1" ||
     expected.protocol !== "http:" ||
-    !["127.0.0.1", "localhost"].includes(expected.hostname) ||
-    url.origin !== expected.origin ||
+    !["127.0.0.1", "localhost"].includes(expected.hostname)
+  )
+    throw new ChatGPTError(
+      "invalid_local_config",
+      "LOOPPILOT_LOCAL_ORIGIN must be an HTTP loopback origin, such as http://127.0.0.1:3000. Restart the server after changing it.",
+      403,
+    );
+  // Next.js may normalize the internal Request URL to localhost even when the
+  // browser used 127.0.0.1. The browser-facing Host must still match exactly;
+  // accept only internal loopback aliases with the configured scheme and port.
+  if (
+    url.protocol !== expected.protocol ||
+    url.port !== expected.port ||
+    !["127.0.0.1", "localhost"].includes(url.hostname) ||
     request.headers.get("host") !== expected.host
   )
     throw new ChatGPTError(
-      "local_only",
-      "Local AI settings require LOOPPILOT_CHATGPT_LOCAL=1 and the configured loopback origin. See README.",
+      "local_origin_mismatch",
+      `Open LoopPilot at ${expected.origin} using the configured host and port.`,
       403,
     );
   const origin = request.headers.get("origin");
+  // The OAuth browser return is intentionally cross-site. State and the
+  // HttpOnly browser binding are still required by the callback handler.
+  const callbackReturn =
+    oauthCallback &&
+    !mutation &&
+    request.method === "GET" &&
+    url.pathname === "/auth/callback";
   if (
     (mutation && origin !== expected.origin) ||
-    (origin && origin !== expected.origin) ||
-    request.headers.get("sec-fetch-site") === "cross-site"
+    (!callbackReturn &&
+      ((origin && origin !== expected.origin) ||
+        request.headers.get("sec-fetch-site") === "cross-site"))
   )
     throw new ChatGPTError(
       "invalid_origin",

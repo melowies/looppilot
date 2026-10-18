@@ -65,6 +65,8 @@ Verification: 137 offline unit/embedded-PostgreSQL tests, lint, strict types, pr
 
 ## Future phases
 
+Local OAuth callback correction: Next.js can normalize Request.url to localhost even when the browser Host is 127.0.0.1. The local guard accepts only internal loopback aliases on the configured protocol/port and still requires the exact browser Host and mutation Origin. OAuth returns are cross-site GETs: only `/auth/callback` opts into that exception; one-time state/nonce/PKCE and the HttpOnly browser binding remain required. Missing callback binding fails before any session storage operation. Disabled-mode, invalid-config and host-mismatch messages are distinct. Real Next route tests now run local mode on isolated port 3003 and check settings authentication, foreign Host/Origin rejection and cross-site callback failure without credentials. Follow-up verification: lint, strict types, 143 offline tests, production build and six preview/real-route browser checks passed. No real OAuth exchange or inference was performed by these checks.
+
 Real notes/spreadsheet import adapters, richer long-term retention schedules, snapshot trends, separate behavioral rehearsal outcomes and scored mock interviews. Optional OpenAI coaching is implemented with consent and constrained outputs; retain those boundaries. Add pagination when account history warrants it; current queries intentionally load this one user's preparation history.
 
 <!-- BEGIN:nextjs-agent-rules -->

@@ -1,5 +1,40 @@
 import { expect, test } from "@playwright/test";
 import { readFileSync } from "node:fs";
+
+test("real Next.js AI routes accept configured loopback requests and reject foreign origins before authentication", async ({
+  request,
+}) => {
+  // This reaches the actual Next route and guard, without a Supabase bearer token,
+  // credential storage, OAuth authorization, or external inference.
+  const get = await request.get("/api/ai/settings");
+  expect(get.status()).toBe(401);
+  expect(await get.json()).toMatchObject({ code: "unauthenticated" });
+  const post = await request.post("/api/ai/settings", {
+    headers: { Origin: "http://127.0.0.1:3003" },
+    data: { action: "connect" },
+  });
+  expect(post.status()).toBe(401);
+  expect(await post.json()).toMatchObject({ code: "unauthenticated" });
+  const foreign = await request.post("/api/ai/settings", {
+    headers: { Origin: "https://attacker.test" },
+    data: { action: "connect" },
+  });
+  expect(foreign.status()).toBe(403);
+  expect(await foreign.json()).toMatchObject({ code: "invalid_origin" });
+  const wrongHost = await request.get("/api/ai/settings", {
+    headers: { Host: "attacker.test:3003" },
+  });
+  expect(wrongHost.status()).toBe(403);
+  expect(await wrongHost.json()).toMatchObject({
+    code: "local_origin_mismatch",
+  });
+  const callback = await request.get("/auth/callback?state=synthetic-test", {
+    headers: { "Sec-Fetch-Site": "cross-site" },
+    maxRedirects: 0,
+  });
+  expect(callback.status()).toBe(303);
+  expect(callback.headers().location).toBe("/settings?chatgpt=failed");
+});
 test("preview is honest, navigable and fits the viewport", async ({
   page,
 }, testInfo) => {
