@@ -1,0 +1,14 @@
+node_modules/
+.next/
+.next-crud/
+.next-preview/
+.env*
+!.env.example
+*.tsbuildinfo
+coverage/
+artifacts/
+test-results/
+playwright-report/
+public/monaco/
+public/python/
+.looppilot-local/
