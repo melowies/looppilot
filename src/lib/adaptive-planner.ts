@@ -2,6 +2,7 @@ import type { Attempt, Data, Story } from "./domain";
 import { localDate, patterns, principles } from "./domain";
 import { addDays, plan } from "./planner";
 import { readTestEvidence } from "./coding-workspace";
+import { isLive, occupiedInterval, sessionChange } from "./live-study";
 import {
   plannerConfigSchema,
   type DayPlan,
@@ -40,7 +41,13 @@ export const independentPass = (a: Attempt) =>
 const sortedHistory = (attempts: Attempt[]) =>
   [...attempts].sort(
     (a, b) =>
-      a.attempted_on.localeCompare(b.attempted_on) || a.id.localeCompare(b.id),
+      a.attempted_on.localeCompare(b.attempted_on) ||
+      (
+        readTestEvidence(a.test_results).studySession?.startedAt ?? ""
+      ).localeCompare(
+        readTestEvidence(b.test_results).studySession?.startedAt ?? "",
+      ) ||
+      a.id.localeCompare(b.id),
   );
 const median = (values: number[], fallback: number) => {
   if (!values.length) return fallback;
@@ -147,6 +154,57 @@ export function preparationPhase(hours: number | null, config: PlannerConfig) {
   if (hours <= config.phaseDays.focused * 24) return "Interview rehearsal";
   if (hours <= config.phaseDays.foundations * 24) return "Focused practice";
   return "Foundations";
+}
+export function remainingStudyMinutes(
+  data: Data,
+  config: PlannerConfig,
+  now: string,
+) {
+  const instant = Date.parse(now),
+    day = localDate(new Date(now), config.timezone);
+  const rounds = config.rounds.map((r) => ({
+    ...r,
+    start: zonedInstant(r.date, r.time, config.interviewTimezone),
+  }));
+  if (
+    !rounds.length &&
+    data.profile.interview_date &&
+    data.profile.interview_date <= day
+  )
+    return 0;
+  if (
+    rounds.length &&
+    rounds.every(
+      (r) => r.start !== null && r.start + r.duration * 60000 <= instant,
+    )
+  )
+    return 0;
+  const deadline = Math.min(
+    Infinity,
+    ...rounds
+      .filter(
+        (r) =>
+          r.start !== null &&
+          localDate(new Date(r.start), config.timezone) === day,
+      )
+      .map((r) => r.start!),
+  );
+  const slots = subtractIntervals(
+    availableIntervals(config, day),
+    rounds
+      .filter((r) => r.start !== null)
+      .map((r) => ({ start: r.start!, end: r.start! + r.duration * 60000 })),
+  );
+  return Math.floor(
+    intervalMinutes(
+      slots
+        .map((s) => ({
+          start: Math.max(s.start, instant),
+          end: Math.min(s.end, deadline),
+        }))
+        .filter((s) => s.end > s.start),
+    ),
+  );
 }
 const storyGaps = (s: Story) =>
   [
@@ -415,15 +473,21 @@ export function generateAdaptiveWeek(
     const preserved = (old?.items ?? [])
       .filter(
         (i) =>
-          i.status !== "planned" || i.pinned || Date.parse(i.start) < nowMs,
+          i.status !== "planned" ||
+          i.pinned ||
+          isLive(i) ||
+          Date.parse(i.end) <= nowMs,
       )
       .map((i) =>
-        i.status === "planned" && Date.parse(i.end) <= nowMs
+        i.status === "planned" &&
+        !isLive(i) &&
+        !i.pinned &&
+        Date.parse(i.end) <= nowMs
           ? { ...i, status: "missed" as const }
           : { ...i },
       );
     for (const item of preserved.filter(
-      (i) => i.pinned && i.status === "planned",
+      (i) => (i.pinned || isLive(i)) && i.status === "planned",
     )) {
       if (
         !availability.some(
@@ -432,30 +496,42 @@ export function generateAdaptiveWeek(
         )
       )
         dayWarnings.push(
-          `Pinned session “${item.title}” conflicts with current availability or an interview. Reschedule or unpin it.`,
+          `${isLive(item) ? "Active" : "Pinned"} session “${item.title}” conflicts with current availability or an interview. ${isLive(item) ? "Finish or pause your work; your study window will not be extended." : "Reschedule or unpin it."}`,
         );
     }
     const blocking = preserved
       .filter((i) => !["skipped", "missed"].includes(i.status))
-      .map((i) => ({
-        start: Date.parse(i.start),
-        end: i.completed_at
-          ? Math.min(Date.parse(i.end), Date.parse(i.completed_at))
-          : Date.parse(i.end),
-      }));
+      .map((i) => occupiedInterval(i, nowMs));
     let slots = subtractIntervals(availability, [
       ...blocking,
       { start: 0, end: Math.ceil(nowMs / 60000) * 60000 },
     ]);
+    // An explicitly active task owns the remainder of today's window. Its end
+    // is unknown until Finish; do not allocate work that could overlap it.
+    if (previous.some((p) => p.items.some(isLive)) && day === today) slots = [];
     // Keep breaks around retained sessions; early completion can free remaining time.
     const breakMs = config.breakMinutes * 60000;
     slots = subtractIntervals(
       slots,
-      blocking.flatMap((b) => [
-        { start: b.start - breakMs, end: b.start },
-        { start: b.end, end: b.end + breakMs },
-      ]),
+      preserved
+        .filter(
+          (i) =>
+            !["skipped", "missed"].includes(i.status) && i.category !== "break",
+        )
+        .map((i) => occupiedInterval(i, nowMs))
+        .flatMap((b) => [
+          { start: b.start - breakMs, end: b.start },
+          { start: b.end, end: b.end + breakMs },
+        ]),
     );
+    // Real completion timestamps include seconds. Round free slots inward so a
+    // required rest and the next work session share a safe minute boundary.
+    slots = slots
+      .map((s) => ({
+        start: Math.ceil(s.start / 60000) * 60000,
+        end: Math.floor(s.end / 60000) * 60000,
+      }))
+      .filter((s) => s.end > s.start);
     const attempts = data.attempts.filter((a) => a.attempted_on <= today);
     const recent = sortedHistory(attempts).slice(-3);
     const struggle =
@@ -478,7 +554,10 @@ export function generateAdaptiveWeek(
         .reduce((sum, a) => sum + (minutes(a) ?? 0), 0),
       preserved
         .filter((i) => i.category !== "break" && i.status === "completed")
-        .reduce((sum, i) => sum + i.minutes, 0),
+        .reduce(
+          (sum, i) => sum + (i.live ? i.live.elapsed_seconds / 60 : i.minutes),
+          0,
+        ),
     );
     const futurePinned = preserved
       .filter((i) => i.status === "planned" && i.category !== "break")
@@ -489,6 +568,42 @@ export function generateAdaptiveWeek(
       );
     let budget = Math.max(0, dailyCap - recordedMinutes - futurePinned);
     const result = [...preserved];
+    const recentWork = preserved
+      .filter((i) => i.category !== "break" && i.completed_at && i.live)
+      .sort((a, b) => b.completed_at!.localeCompare(a.completed_at!))[0];
+    if (recentWork && !previous.some((p) => p.items.some(isLive))) {
+      const start = Math.ceil(nowMs / 60000) * 60000;
+      const restEnd =
+        Math.ceil((Date.parse(recentWork.completed_at!) + breakMs) / 60000) *
+        60000;
+      if (
+        restEnd > start &&
+        availability.some((s) => s.start <= start && s.end >= restEnd) &&
+        !preserved.some(
+          (i) =>
+            i.category === "break" &&
+            i.status !== "missed" &&
+            Date.parse(i.end) > start,
+        )
+      ) {
+        result.push({
+          key: `${recentWork.key}:rest:${start}`,
+          title: "Take a break",
+          category: "break",
+          start: new Date(start).toISOString(),
+          end: new Date(restEnd).toISOString(),
+          minutes: (restEnd - start) / 60000,
+          problem_id: null,
+          story_id: null,
+          reason:
+            "Rest after your completed session. Start the countdown when you begin resting.",
+          priority: 0,
+          status: "planned",
+          pinned: false,
+          completed_at: null,
+        });
+      }
+    }
     const occupiedKeys = new Set(preserved.map((i) => i.key));
     const candidateList = candidates(
       { ...data, attempts },
@@ -588,7 +703,7 @@ export function generateAdaptiveWeek(
         ? "Baseline assessment: no coding results are recorded. Weaknesses are unknown."
         : "Priorities use latest results per problem, assistance, confidence, repeated hints and D+1/D+3/D+7 reviews. Task completion and sample passes never establish mastery.",
       `${phase}: ${phase === "Light review" ? "light recall, no new topics; study is capped at 90 minutes" : phase === "Interview rehearsal" ? "favor self-directed rehearsal and existing algorithms" : phase === "Focused practice" ? "increase independent timed work and behavioral rehearsal" : "develop foundations and independent Medium practice"}.`,
-      `Daily study cap ${dailyCap} minutes; breaks use additional window time. ${Math.ceil(recordedMinutes)} minutes accounted for (maximum of logged sessions, attempt durations, or estimates for completed sessions to avoid double counting). Task completion does not record an actual duration.`,
+      `Daily study cap ${dailyCap} minutes; breaks use additional window time. ${Math.ceil(recordedMinutes)} minutes accounted for (maximum of logged sessions, attempt durations, or session time to avoid double counting). Older completions without a timer use estimates.`,
       "Future days are provisional: no future attempts or improvements are assumed. Mock scores and separate behavioral practice outcomes are not available.",
     ];
     if (struggle)
@@ -613,6 +728,25 @@ export function generateAdaptiveWeek(
             `${newKeys.filter((k) => !oldKeys.includes(k)).length} sessions added; ${oldKeys.filter((k) => !newKeys.includes(k)).length} unpinned sessions replaced. Completed and pinned sessions retained.`,
           ]
       : ["First plan for this date."];
+    const latestCompletion = [...preserved]
+      .filter((i) => i.completed_at && i.live)
+      .sort((a, b) => b.completed_at!.localeCompare(a.completed_at!))[0];
+    const liveChange = latestCompletion && sessionChange(latestCompletion);
+    if (liveChange && !changes.includes(liveChange))
+      changes.unshift(liveChange);
+    const deferred = (old?.items ?? []).filter(
+      (i) =>
+        i.status === "planned" &&
+        i.category !== "break" &&
+        !result.some((r) => r.key === i.key),
+    );
+    if (deferred.length)
+      changes.push(
+        `${deferred.map((i) => i.title).join(", ")} deferred for a later available window; future days remain provisional.`.slice(
+          0,
+          3000,
+        ),
+      );
     return {
       day,
       timezone: config.timezone,

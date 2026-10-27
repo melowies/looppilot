@@ -2,10 +2,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { PracticeClock, type Timing } from "@/lib/practice-timer";
 
-export function usePracticeTimer() {
+export function usePracticeTimer(suspended = false) {
   const clock = useRef(new PracticeClock());
   const source = useRef<Timing["source"]>("measured");
   const enabled = useRef(true);
+  const historical = useRef(false);
   const [display, setDisplay] = useState({
     seconds: 0,
     running: false,
@@ -14,6 +15,12 @@ export function usePracticeTimer() {
     source: "measured",
   });
   const known = useRef(false);
+  // Linked scheduled practice uses the persisted session clock. Retain any
+  // previously recorded attempt timing, but never advance both clocks.
+  useEffect(() => {
+    enabled.current = !suspended && !historical.current;
+    if (suspended) clock.current.pause("Study session timing");
+  }, [suspended]);
   const snapshot = useCallback(
     (): Timing | undefined =>
       known.current
@@ -45,15 +52,16 @@ export function usePracticeTimer() {
     [refresh],
   );
   const reset = useCallback(
-    (timing?: Timing, historical = false) => {
+    (timing?: Timing, isHistorical = false) => {
       clock.current = new PracticeClock(timing?.seconds ?? 0);
       if (timing) clock.current.pause();
       known.current = Boolean(timing);
       source.current = timing?.source ?? "measured";
-      enabled.current = !historical;
+      historical.current = isHistorical;
+      enabled.current = !isHistorical && !suspended;
       refresh();
     },
-    [refresh],
+    [refresh, suspended],
   );
   const correct = useCallback(
     (seconds: number) => {

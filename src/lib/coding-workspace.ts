@@ -12,7 +12,7 @@ export interface PythonExecutionRequest {
   language: "python";
   source: string;
   cases: PythonTestCase[];
-  method: "numIslands";
+  method: "numIslands" | "reverseList";
 }
 export interface PythonTestResult {
   caseId: string;
@@ -52,6 +52,13 @@ const evidenceSchema = z.object({
       source: z.enum(["measured", "manual"]),
     })
     .optional(),
+  studySession: z
+    .object({
+      day: z.iso.date(),
+      key: z.string().max(300),
+      startedAt: z.iso.datetime({ offset: true }),
+    })
+    .optional(),
 });
 export function readTestEvidence(raw: string) {
   try {
@@ -65,19 +72,22 @@ export function readTestEvidence(raw: string) {
     cases: [] as PythonTestCase[],
     evidence: raw,
     timing: undefined,
+    studySession: undefined,
   };
 }
 export function serializeEvidence(
   cases: PythonTestCase[],
   evidence: string,
   timing?: Timing,
+  studySession?: { day: string; key: string; startedAt: string },
 ) {
-  return cases.length || timing
+  return cases.length || timing || studySession
     ? JSON.stringify({
         format: "looppilot-workspace-v1",
         cases,
         evidence,
         ...(timing ? { timing } : {}),
+        ...(studySession ? { studySession } : {}),
       })
     : evidence;
 }

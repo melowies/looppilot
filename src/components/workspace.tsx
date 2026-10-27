@@ -36,6 +36,8 @@ import { readiness } from "@/lib/planner";
 import { configured, supabase } from "@/lib/supabase";
 import { loadData, remove, save } from "@/lib/repository";
 import { importHistory } from "@/lib/history-import";
+import { clearStudy } from "@/lib/live-study";
+import { LiveStudyEditorStatus } from "./live-study-editor-status";
 
 import { CodingPractice } from "./coding-practice";
 import { Navigation } from "./navigation";
@@ -114,6 +116,7 @@ export default function Workspace({
     });
     const { data: listener } = supabase.auth.onAuthStateChange((event, s) => {
       if (sessionId.current !== (s?.user.id ?? null)) {
+        if (sessionId.current) clearStudy(sessionId.current);
         setData(emptyData);
         setEditor(null);
         setError("");
@@ -131,6 +134,18 @@ export default function Workspace({
     };
   }, []);
   const userId = session?.user.id;
+  useEffect(() => {
+    if (!userId || practiceProblemId) return;
+    const changed = (event: StorageEvent) => {
+      if (
+        event.key === "looppilot-evidence-signal" &&
+        document.visibilityState === "visible"
+      )
+        void refresh();
+    };
+    window.addEventListener("storage", changed);
+    return () => window.removeEventListener("storage", changed);
+  }, [userId, practiceProblemId, refresh]);
   useEffect(() => {
     if (!userId) return;
     let cancelled = false;
@@ -343,6 +358,7 @@ export default function Workspace({
           )}
           {path === "/" && (
             <Overview
+              userId={userId}
               data={data}
               today={today}
               enabled={enabled}
@@ -609,7 +625,11 @@ export default function Workspace({
                           )),
                     )
                     .map((s) => (
-                      <article key={s.id} className="panel story-card">
+                      <article
+                        key={s.id}
+                        id={`story-${s.id}`}
+                        className="panel story-card"
+                      >
                         <div className="story-top">
                           <BookOpen size={20} />
                           <Badge tone={s.status === "ready" ? "rose" : "amber"}>
@@ -859,6 +879,9 @@ export default function Workspace({
           }}
         >
           <form onSubmit={(e) => void submitEditor(e)} className="editor-form">
+            {editor.kind === "story" && (
+              <LiveStudyEditorStatus userId={userId} />
+            )}
             {error && (
               <div className="alert error" role="alert">
                 {error}

@@ -4,8 +4,15 @@ import { useEffect, useState } from "react";
 import { CalendarDays, Check, Pin, RefreshCw, Settings2 } from "lucide-react";
 import type { Data } from "@/lib/domain";
 import type { ScheduleItem } from "@/lib/adaptive-types";
-import { editPlannerItem, savePlannerConfig } from "@/lib/planner-repository";
-import { studyWeek, zonedInstant } from "@/lib/study-time";
+import {
+  editPlannerItem,
+  liveStudyAction,
+  savePlannerConfig,
+} from "@/lib/planner-repository";
+import { currentStudy, liveSeconds, signalStudyChange } from "@/lib/live-study";
+import { remainingStudyMinutes } from "@/lib/adaptive-planner";
+import { useStudyClock } from "./use-study-clock";
+import { availableIntervals, studyWeek, zonedInstant } from "@/lib/study-time";
 import { message } from "@/lib/form";
 import { supabase } from "@/lib/supabase";
 import type { useAdaptivePlanner } from "./use-adaptive-planner";
@@ -28,6 +35,7 @@ export function StudyPlan({
   onLegacyToggle: (t: Data["tasks"][number]) => void;
 }) {
   const { state, busy, today } = planner;
+  const now = useStudyClock();
   const [selected, setSelected] = useState<string | null>(null),
     [editing, setEditing] = useState(false);
   const [error, setError] = useState(""),
@@ -70,42 +78,62 @@ export function StudyPlan({
   useEffect(() => {
     if (!coachKey || !supabase) return;
     const abort = new AbortController();
-    void (async () => {
-      try {
-        const {
-          data: { session },
-        } = await supabase!.auth.getSession();
-        if (!session) return;
-        const response = await fetch("/api/planner/coach", {
-          method: "POST",
-          headers: { Authorization: `Bearer ${session.access_token}` },
-          signal: abort.signal,
-        });
-        const result = await response.json();
-        if (!response.ok)
-          throw new Error(
-            result.error ??
-              "OpenAI coaching is unavailable. Your deterministic schedule is ready.",
-          );
-        if (!abort.signal.aborted) setCoach({ ...result, key: coachKey });
-      } catch (e) {
-        if (!abort.signal.aborted)
-          setCoachError({ key: coachKey, message: message(e) });
-      }
-    })();
-    return () => abort.abort();
+    const debounce = setTimeout(() => {
+      void (async () => {
+        try {
+          const {
+            data: { session },
+          } = await supabase!.auth.getSession();
+          if (!session) return;
+          const response = await fetch("/api/planner/coach", {
+            method: "POST",
+            headers: { Authorization: `Bearer ${session.access_token}` },
+            signal: abort.signal,
+          });
+          const result = await response.json();
+          if (!response.ok)
+            throw new Error(
+              result.error ??
+                "OpenAI coaching is unavailable. Your deterministic schedule is ready.",
+            );
+          if (!abort.signal.aborted) setCoach({ ...result, key: coachKey });
+        } catch (e) {
+          if (!abort.signal.aborted)
+            setCoachError({ key: coachKey, message: message(e) });
+        }
+      })();
+    }, 1200);
+    return () => {
+      clearTimeout(debounce);
+      abort.abort();
+    };
   }, [coachKey]);
   const edit = async (
     planDay: string,
     item: ScheduleItem,
-    action: "complete" | "skip" | "pin" | "reschedule",
+    action: "complete" | "skip" | "pin" | "reschedule" | "start",
     start?: string,
   ) => {
     if (!state) return;
     setSaving(true);
     setError("");
     try {
-      await editPlannerItem(state.revision, planDay, item.key, action, start);
+      if (action === "complete" || action === "skip" || action === "start") {
+        let token = sessionStorage.getItem("looppilot-study-tab");
+        if (!token) {
+          token = crypto.randomUUID();
+          sessionStorage.setItem("looppilot-study-tab", token);
+        }
+        await liveStudyAction(
+          state.revision,
+          planDay,
+          item.key,
+          action === "complete" ? "finish" : action,
+          token,
+        );
+      } else
+        await editPlannerItem(state.revision, planDay, item.key, action, start);
+      signalStudyChange();
       await planner.refresh(true);
       return true;
     } catch (e) {
@@ -180,6 +208,16 @@ export function StudyPlan({
         <section className="panel">
           <span>Today’s study windows</span>
           <strong>{todayPlan?.availableMinutes ?? 0} min</strong>
+          <small>
+            {state
+              ? remainingStudyMinutes(
+                  data,
+                  state.config,
+                  new Date(now).toISOString(),
+                )
+              : 0}{" "}
+            min remaining in your windows.
+          </small>
           <small>
             Daily study limit: {state?.config.dailyMinutes ?? 0} min.
             Availability comes from your windows, not this limit.
@@ -291,6 +329,18 @@ export function StudyPlan({
               {w}
             </p>
           ))}
+          {currentStudy(state, now).active && (
+            <p className="panel-note">
+              Current session: {currentStudy(state, now).active!.item.title} ·{" "}
+              {currentStudy(state, now).active!.item.live!.state}. Remaining
+              work adapts after you finish.
+            </p>
+          )}
+          {day?.changes.slice(0, 3).map((change) => (
+            <p className="panel-note" key={change}>
+              {change}
+            </p>
+          ))}
           {!day?.items.length ? (
             <Empty
               title="No sessions scheduled"
@@ -338,13 +388,25 @@ export function StudyPlan({
                       <Badge
                         tone={item.status === "completed" ? "rose" : "neutral"}
                       >
-                        {item.status}
+                        {item.live?.state ?? item.status}
                       </Badge>
                     </div>
                     <p>
                       {item.minutes} min planned · {item.category} · priority{" "}
                       {item.priority}
                     </p>
+                    {item.live && (
+                      <p>
+                        {Math.floor(liveSeconds(item, now) / 60)} min active /{" "}
+                        {item.minutes} min planned
+                        {item.live.outcome
+                          ? ` · ${item.live.outcome}, ${item.live.assistance}`
+                          : ""}
+                        {item.live.duration_minutes != null
+                          ? ` · attempt ${item.live.duration_minutes} min`
+                          : ""}
+                      </p>
+                    )}
                     <details>
                       <summary>Why this session?</summary>
                       <p>{item.reason}</p>
@@ -359,12 +421,31 @@ export function StudyPlan({
                         </Link>
                       )}
                       {item.story_id && (
-                        <Link className="text-link" href="/stories">
+                        <Link
+                          className="text-link"
+                          href={`/stories#story-${item.story_id}`}
+                        >
                           Open story bank
                         </Link>
                       )}
                       {item.status === "planned" && (
                         <>
+                          {!item.live && day.day === today && (
+                            <button
+                              className="text-link"
+                              aria-label={`Start ${item.title}`}
+                              disabled={
+                                disabled ||
+                                Boolean(currentStudy(state, now).active) ||
+                                !availableIntervals(state!.config, today).some(
+                                  (w) => w.start <= now && w.end > now,
+                                )
+                              }
+                              onClick={() => void edit(day.day, item, "start")}
+                            >
+                              Start
+                            </button>
+                          )}
                           <button
                             className="text-link"
                             disabled={disabled}

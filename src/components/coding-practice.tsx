@@ -8,6 +8,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type CSSProperties,
 } from "react";
 import {
@@ -24,6 +25,13 @@ import {
   type PythonExecutionResult,
 } from "@/lib/coding-workspace";
 import { save } from "@/lib/repository";
+import {
+  liveAttemptLink,
+  signalStudyChange,
+  subscribeStudy,
+  type StudySessionLink,
+} from "@/lib/live-study";
+import { LinkedStudyIndicator } from "./linked-study-indicator";
 import { message } from "@/lib/form";
 import { Badge, Field } from "./ui";
 import { pythonProblem } from "@/lib/python-problems";
@@ -41,6 +49,7 @@ type View = "Problem" | "Code" | "Tests" | "Reflection";
 
 function useUnsavedWarning(dirty: boolean) {
   const dirtyRef = useRef(dirty);
+  const clearGuardRef = useRef<() => Promise<void>>(() => Promise.resolve());
   useEffect(() => {
     dirtyRef.current = dirty;
   }, [dirty]);
@@ -60,11 +69,20 @@ function useUnsavedWarning(dirty: boolean) {
         ) {
           event.preventDefault();
           event.stopPropagation();
+        } else {
+          event.preventDefault();
+          event.stopPropagation();
+          const button = target.closest<HTMLButtonElement>(
+            'button[aria-label="Sign out"]',
+          );
+          void clearGuardRef.current().then(() => button?.click());
         }
         return;
       }
       const link = target.closest("a[href]");
       if (!link || !dirtyRef.current) return;
+      if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey)
+        return;
       const href = link.getAttribute("href");
       if (
         !href ||
@@ -75,6 +93,10 @@ function useUnsavedWarning(dirty: boolean) {
       if (!window.confirm("You have unsaved changes. Leave without saving?")) {
         event.preventDefault();
         event.stopPropagation();
+      } else {
+        event.preventDefault();
+        event.stopPropagation();
+        void clearGuardRef.current().then(() => (link as HTMLElement).click());
       }
     };
     window.addEventListener("beforeunload", unload);
@@ -89,7 +111,16 @@ function useUnsavedWarning(dirty: boolean) {
     // A same-URL history entry lets Back ask before the router leaves this page.
     history.pushState({ ...history.state, loopPilotGuard: true }, "");
     let atGuard = true;
+    let removing = false;
+    let removal: Promise<void> | undefined;
+    let resolveRemoval: (() => void) | undefined;
     const pop = () => {
+      if (removing) {
+        atGuard = false;
+        removing = false;
+        resolveRemoval?.();
+        return;
+      }
       if (history.state?.loopPilotGuard) {
         atGuard = true;
         return;
@@ -103,12 +134,26 @@ function useUnsavedWarning(dirty: boolean) {
         history.back();
       } else history.forward();
     };
+    clearGuardRef.current = () => {
+      if (removal) return removal;
+      dirtyRef.current = false;
+      if (!atGuard || !history.state?.loopPilotGuard) return Promise.resolve();
+      removing = true;
+      removal = new Promise<void>((resolve) => {
+        resolveRemoval = resolve;
+      });
+      history.back();
+      return removal;
+    };
     window.addEventListener("popstate", pop);
     return () => {
+      clearGuardRef.current = () => Promise.resolve();
       window.removeEventListener("popstate", pop);
+      resolveRemoval?.();
       if (atGuard && history.state?.loopPilotGuard) history.back();
     };
   }, [dirty]);
+  return useCallback(() => clearGuardRef.current(), []);
 }
 
 function Tabs({
@@ -168,6 +213,7 @@ export function TestPanel({
   onEvidenceChange,
   result = null,
   runState = "",
+  inputHelp = "Custom input and expected output are saved with this attempt. Execution requires a supported problem adapter.",
 }: {
   cases: PythonTestCase[];
   onChange: (cases: PythonTestCase[]) => void;
@@ -175,6 +221,7 @@ export function TestPanel({
   onEvidenceChange: (value: string) => void;
   result?: PythonExecutionResult | null;
   runState?: string;
+  inputHelp?: string;
 }) {
   const [tab, setTab] = useState("Test Cases");
   useEffect(() => {
@@ -196,10 +243,7 @@ export function TestPanel({
         {tab === "Test Cases" && (
           <>
             <div className="practice-test-heading">
-              <p>
-                Curated samples and custom cases. Input: JSON grid or{" "}
-                {`{"grid": [...]}`}. Saved with this attempt.
-              </p>
+              <p>{inputHelp}</p>
               <button
                 type="button"
                 className="secondary"
@@ -216,8 +260,9 @@ export function TestPanel({
             </div>
             {!cases.length && (
               <p>
-                No test cases yet. Add examples from the problem statement or
-                your own edge cases.
+                No saved test cases. On supported problems, Run Code uses the
+                curated samples without changing this attempt. Add your own edge
+                cases here.
               </p>
             )}
             {cases.map((c, index) => (
@@ -285,11 +330,13 @@ export function TestPanel({
           <>
             <p>
               {result
-                ? "Sample execution results. These do not change self-reported correctness or readiness."
+                ? "Sample results only · self-reported outcome unchanged."
                 : runState ||
                   "Not run. Run Code on a supported Python problem to view actual outputs."}
             </p>
-            {result && <p role="status">{runState}</p>}
+            {result && !runState.startsWith("Execution complete.") && (
+              <p role="status">{runState}</p>
+            )}
             {result?.results.map((r) => (
               <div className="practice-case" key={r.caseId}>
                 <strong>{r.status}</strong>
@@ -375,7 +422,16 @@ export function CodingPractice({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const saving = useRef(false);
-  const timer = usePracticeTimer();
+  // Identity-only subscription: heartbeat updates must not rerender Monaco.
+  const activeIdentity = useSyncExternalStore(
+    subscribeStudy,
+    () => JSON.stringify(liveAttemptLink(userId, problem.id) ?? null),
+    () => "null",
+  );
+  const [boundSession, setBoundSession] = useState<StudySessionLink>();
+  const studyLink =
+    readTestEvidence(draft.test_results).studySession ?? boundSession;
+  const timer = usePracticeTimer(Boolean(studyLink));
   const {
     snapshot: timerSnapshot,
     pause: timerPause,
@@ -394,16 +450,77 @@ export function CodingPractice({
   const [theme, setTheme] = useState<"light" | "vs-dark">("vs-dark");
   const [fontSize, setFontSize] = useState(15);
   const [width, setWidth] = useState(36);
-  const [editorHeight, setEditorHeight] = useState(72);
+  const [editorHeight, setEditorHeight] = useState(66);
   const gridRef = useRef<HTMLDivElement>(null);
   const rightRef = useRef<HTMLDivElement>(null);
+  function showView(next: View) {
+    setView(next);
+    // Mobile has one workspace scroll region. Explicit tab/run actions bring
+    // its panel below the sticky tabs instead of leaving outputs below toolbars.
+    requestAnimationFrame(() => {
+      if (!window.matchMedia("(max-width: 760px)").matches) return;
+      const grid = gridRef.current;
+      const content = grid?.closest<HTMLElement>(".practice-content");
+      const tabs = content?.querySelector<HTMLElement>(".practice-mobile-tabs");
+      if (!grid || !content || !tabs) return;
+      content.scrollTop +=
+        grid.getBoundingClientRect().top -
+        content.getBoundingClientRect().top -
+        tabs.getBoundingClientRect().height -
+        12;
+    });
+  }
+  useEffect(() => {
+    const content = gridRef.current?.closest<HTMLElement>(".practice-content");
+    if (!content) return;
+    const measure = () =>
+      content.style.setProperty(
+        "--practice-top",
+        `${content.getBoundingClientRect().top}px`,
+      );
+    const observer = new ResizeObserver(measure);
+    observer.observe(document.documentElement);
+    window.addEventListener("resize", measure);
+    measure();
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, []);
   const value: Draft = useMemo(
     () => ({
       ...draft,
-      test_results: serializeEvidence(cases, evidence, timing),
+      test_results: serializeEvidence(cases, evidence, timing, studyLink),
     }),
-    [draft, cases, evidence, timing],
+    [draft, cases, evidence, timing, studyLink],
   );
+  useEffect(() => {
+    if (!recovered || attemptId || studyLink || activeIdentity === "null")
+      return;
+    // Capture once on opening/new attempt, never infer a link at save time.
+    const link = JSON.parse(activeIdentity) as StudySessionLink;
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setBoundSession(link);
+    // Linking an untouched draft does not itself constitute unsaved user work.
+    if (JSON.stringify(value) === saved)
+      setSaved(
+        JSON.stringify({
+          ...value,
+          test_results: serializeEvidence(cases, evidence, timing, link),
+        }),
+      );
+    /* eslint-enable react-hooks/set-state-in-effect */
+  }, [
+    activeIdentity,
+    recovered,
+    attemptId,
+    studyLink,
+    value,
+    saved,
+    cases,
+    evidence,
+    timing,
+  ]);
   const recovery = useRef({ draft: value, attemptId, saved });
   useEffect(() => {
     recovery.current = { draft: value, attemptId, saved };
@@ -420,12 +537,27 @@ export function CodingPractice({
           (stored.attemptId && !attempts.some((a) => a.id === stored.attemptId))
         )
           throw new Error("Stale draft");
+        /* eslint-disable react-hooks/set-state-in-effect */
         const tests = readTestEvidence(parsed.test_results);
+        // An untouched blank preview from before an adapter was added is safe
+        // to initialize. Never replace edited drafts or saved historical code.
+        if (
+          !stored.attemptId &&
+          !parsed.solution &&
+          !tests.cases.length &&
+          !tests.evidence &&
+          !tests.timing &&
+          !stored.timing &&
+          stored.saved === JSON.stringify(stored.draft) &&
+          supported
+        ) {
+          setRecovered(true);
+          return;
+        }
         const restoredTiming = readTestEvidence(
           serializeEvidence([], "", stored.timing),
         ).timing;
         // Restore the client-only draft after hydration. Never count time while closed.
-        /* eslint-disable react-hooks/set-state-in-effect */
         setDraft(parsed);
         setAttemptId(stored.attemptId);
         setCases(tests.cases);
@@ -479,7 +611,7 @@ export function CodingPractice({
     };
   }, [recovered, storageKey, timerSnapshot, timerPause]);
   const dirty = JSON.stringify(value) !== saved;
-  useUnsavedWarning(dirty);
+  const clearUnsavedGuard = useUnsavedWarning(dirty);
   function update<K extends keyof Draft>(key: K, v: Draft[K]) {
     setDraft((d) => ({ ...d, [key]: v }));
     setStatus("");
@@ -500,14 +632,16 @@ export function CodingPractice({
     setError("");
     setRunning(true);
     setRunState("Loading Python runtime…");
-    setView("Tests");
+    showView("Tests");
     const loadingTimeout = window.setTimeout(() => abort.abort(), 30000);
     try {
       const output = await executePython(
         {
           language: "python",
           source: draft.solution,
-          cases: cases.map((c) => ({ ...c })),
+          cases: (cases.length ? cases : supported.cases).map((c) => ({
+            ...c,
+          })),
           method: supported.method,
         },
         abort.signal,
@@ -552,7 +686,12 @@ export function CodingPractice({
         duration_minutes: measured
           ? durationMinutes(measured.seconds)
           : value.duration_minutes,
-        test_results: serializeEvidence(cases, evidence, measured),
+        test_results: serializeEvidence(
+          cases,
+          evidence,
+          measured,
+          readTestEvidence(value.test_results).studySession,
+        ),
       };
       const parsed = attemptSchema.parse(toSave);
       const id = attemptId ?? crypto.randomUUID();
@@ -561,14 +700,32 @@ export function CodingPractice({
         attemptId ? parsed : { ...parsed, id },
         attemptId,
       );
+      // The same-URL Back used to remove the guard must finish before we
+      // advertise a completed save or allow an immediate reload/navigation.
+      await clearUnsavedGuard();
+      const savedValue = JSON.stringify(toSave);
+      // Checkpoint the returned record identity before showing success, so an
+      // immediate reload cannot recover it as a new draft and insert twice.
+      recovery.current = { draft: toSave, attemptId: id, saved: savedValue };
+      try {
+        localStorage.setItem(
+          storageKey,
+          JSON.stringify({ ...recovery.current, timing: measured }),
+        );
+      } catch {
+        setStorageError(
+          "Local recovery is unavailable in this browser. Your attempt was saved to your account.",
+        );
+      }
       setAttemptId(id);
       timerPause("Paused · saved");
       // Freeze the persisted snapshot; later editing resumes this attempt's timer.
       timerReset(measured, !measured);
       setTiming(measured);
       setDraft(toSave);
-      setSaved(JSON.stringify(toSave));
+      setSaved(savedValue);
       setStatus("Attempt saved. Correctness remains self-reported.");
+      signalStudyChange();
       await onSaved();
     } catch (e) {
       setError(message(e));
@@ -585,6 +742,8 @@ export function CodingPractice({
     timerSnapshot,
     timerPause,
     timerReset,
+    clearUnsavedGuard,
+    storageKey,
   ]);
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
@@ -596,7 +755,7 @@ export function CodingPractice({
     window.addEventListener("keydown", keydown);
     return () => window.removeEventListener("keydown", keydown);
   }, [saveAttempt]);
-  function reopen(id: string) {
+  async function reopen(id: string) {
     if (
       busy ||
       (dirty &&
@@ -605,25 +764,32 @@ export function CodingPractice({
         ))
     )
       return;
+    await clearUnsavedGuard();
     const a = attempts.find((a) => a.id === id);
     const next = a
       ? { ...a }
       : {
           ...newAttempt(problem, today),
           solution: supported?.starter ?? "",
-          test_results: serializeEvidence(initialCases, ""),
+          test_results: serializeEvidence(
+            initialCases,
+            "",
+            undefined,
+            liveAttemptLink(userId, problem.id),
+          ),
         };
     const tests = readTestEvidence(next.test_results);
-    if (!tests.cases.length && supported) tests.cases = initialCases;
     const nextValue = {
       ...next,
       test_results: serializeEvidence(
         tests.cases,
         tests.evidence,
         tests.timing,
+        tests.studySession,
       ),
     };
     setDraft(next);
+    setBoundSession(undefined);
     setCases(tests.cases);
     setEvidence(tests.evidence);
     setAttemptId(a?.id);
@@ -700,34 +866,39 @@ export function CodingPractice({
           <h1>{problem.title}</h1>
         </div>
         <div className="button-group">
-          <div className="practice-timer" aria-label="Practice timer">
-            <output aria-label="Active practice duration">
-              {timer.known
-                ? formatDuration(timer.seconds)
-                : draft.duration_minutes != null
-                  ? `${draft.duration_minutes} min`
+          {studyLink ? (
+            <LinkedStudyIndicator owner={userId} link={studyLink} />
+          ) : (
+            <div className="practice-timer" aria-label="Practice timer">
+              <span>Attempt time</span>
+              <output aria-label="Active practice duration">
+                {timer.known
+                  ? formatDuration(timer.seconds)
+                  : draft.duration_minutes != null
+                    ? `${draft.duration_minutes} min`
+                    : attemptId
+                      ? "Unknown"
+                      : "00:00"}
+              </output>
+              <span>
+                {timer.known
+                  ? `${timer.reason}${timer.source === "manual" ? " · manually adjusted" : ""}`
                   : attemptId
-                    ? "Unknown"
-                    : "00:00"}
-            </output>
-            <span>
-              {timer.known
-                ? `${timer.reason}${timer.source === "manual" ? " · manually adjusted" : ""}`
-                : attemptId
-                  ? "Exact timing unknown"
-                  : "Ready"}
-            </span>
-            {(!attemptId || timer.known) && (
-              <button
-                className="secondary"
-                onClick={() =>
-                  timer.running ? timer.pause() : timer.activity()
-                }
-              >
-                {timer.running ? "Pause" : "Resume"}
-              </button>
-            )}
-          </div>
+                    ? "Exact timing unknown"
+                    : "Ready"}
+              </span>
+              {(!attemptId || timer.known) && (
+                <button
+                  className="secondary"
+                  onClick={() =>
+                    timer.running ? timer.pause() : timer.activity()
+                  }
+                >
+                  {timer.running ? "Pause" : "Resume"}
+                </button>
+              )}
+            </div>
+          )}
           <span className="practice-save-state" role="status">
             {dirty ? "Unsaved changes" : "No unsaved changes"}
           </span>
@@ -748,12 +919,14 @@ export function CodingPractice({
             onChange={(e) => reopen(e.target.value)}
           >
             <option value="">New attempt</option>
-            {attempts.map((a, i) => (
-              <option value={a.id} key={a.id}>
-                {a.attempted_on} · {a.correctness} · {a.language} · #
-                {attempts.length - i}
-              </option>
-            ))}
+            <optgroup label="Previous attempts — opens saved code">
+              {attempts.map((a, i) => (
+                <option value={a.id} key={a.id}>
+                  {a.attempted_on} · {a.correctness} · {a.language} · #
+                  {attempts.length - i}
+                </option>
+              ))}
+            </optgroup>
           </select>
         </Field>
         <button
@@ -773,7 +946,7 @@ export function CodingPractice({
           disabled={
             !supported ||
             draft.language.toLowerCase() !== "python" ||
-            !cases.length ||
+            (!cases.length && !supported?.cases.length) ||
             busy ||
             running
           }
@@ -789,13 +962,6 @@ export function CodingPractice({
             Stop execution
           </button>
         )}
-        <span className="practice-save-state">
-          {timer.known
-            ? `${formatDuration(timer.seconds)} active`
-            : draft.duration_minutes != null
-              ? `${draft.duration_minutes} min recorded`
-              : "Duration unknown"}
-        </span>
       </div>
       {status && (
         <p role="status" className="alert success">
@@ -816,7 +982,7 @@ export function CodingPractice({
         <Tabs
           labels={["Problem", "Code", "Tests", "Reflection"]}
           active={view}
-          onChange={(v) => setView(v as View)}
+          onChange={(v) => showView(v as View)}
           label="Workspace views"
         />
       </div>
@@ -854,13 +1020,26 @@ export function CodingPractice({
             </div>
             <h2>Problem details</h2>
             <p>
-              The library stores problem metadata. The full statement and
-              official examples are available at the source.
+              {supported?.description ??
+                "The library stores problem metadata. Read the original source for the statement and examples."}
             </p>
-            {problem.url ? (
+            {supported && (
+              <>
+                <h2>Input and output</h2>
+                <p>{supported.input}</p>
+                <p>{supported.output}</p>
+                <h2>Constraints</h2>
+                <ul>
+                  {supported.constraints.map((c) => (
+                    <li key={c}>{c}</li>
+                  ))}
+                </ul>
+              </>
+            )}
+            {problem.url || supported?.url ? (
               <a
                 className="text-link"
-                href={problem.url}
+                href={problem.url || supported?.url}
                 target="_blank"
                 rel="noreferrer"
               >
@@ -870,8 +1049,8 @@ export function CodingPractice({
               <p>No source URL recorded. Use Edit problem to add one.</p>
             )}
             <h2>Examples</h2>
-            {cases.length ? (
-              cases.map((c, i) => (
+            {(supported?.cases ?? cases).length ? (
+              (supported?.cases ?? cases).map((c, i) => (
                 <div className="practice-case" key={c.id}>
                   <strong>
                     Case {i + 1} ·{" "}
@@ -929,7 +1108,7 @@ export function CodingPractice({
               </Field>
               <div>
                 <p>
-                  Active practice:{" "}
+                  Attempt duration:{" "}
                   <strong>
                     {timer.known
                       ? formatDuration(timer.seconds)
@@ -942,8 +1121,9 @@ export function CodingPractice({
                     : ""}
                 </p>
                 <p>
-                  Measured active practice time; total reasoning time may
-                  differ. Pauses when hidden or after 5 minutes idle.
+                  {studyLink
+                    ? "Study-session active time is recorded separately in the companion. This attempt’s previous duration is retained; a new linked attempt has no separate measured duration."
+                    : "Measured active practice time; total reasoning time may differ. Pauses when hidden or after 5 minutes idle."}
                 </p>
                 {attemptId && !timer.known && (
                   <p>
@@ -1154,6 +1334,11 @@ export function CodingPractice({
             onEvidenceChange={setEvidence}
             result={result}
             runState={runState}
+            inputHelp={
+              supported
+                ? `${supported.input} ${supported.output} Cases are saved with this attempt.`
+                : undefined
+            }
           />
         </div>
       </div>

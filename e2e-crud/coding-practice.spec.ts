@@ -149,9 +149,13 @@ test("IDE keyboard, save/reopen, reflection, panels and navigation warnings", as
       Number(await separator.getAttribute("aria-valuenow")),
     ).toBeGreaterThan(38);
     const tests = page.getByRole("separator", { name: "Resize test panel" });
+    const initialSplit = Number(await tests.getAttribute("aria-valuenow"));
     await tests.focus();
     await page.keyboard.press("ArrowUp");
-    await expect(tests).toHaveAttribute("aria-valuenow", "70");
+    await expect(tests).toHaveAttribute(
+      "aria-valuenow",
+      String(initialSplit - 2),
+    );
   }
   await page.screenshot({
     path: `artifacts/${info.project.name}-coding-practice.png`,

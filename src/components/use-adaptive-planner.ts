@@ -11,12 +11,18 @@ import {
   loadPlanningEvidence,
 } from "@/lib/planner-repository";
 import { message } from "@/lib/form";
+import { dayPlanSchema, plannerConfigSchema } from "@/lib/adaptive-types";
+import { publishStudy, cachedStudy } from "@/lib/live-study";
 
 export function useAdaptivePlanner(data: Data, userId?: string, ready = true) {
   const [storedState, setState] = useState<{
     owner: string;
     value: PlannerState;
-  } | null>(null);
+  } | null>(() =>
+    userId && cachedStudy(userId)
+      ? { owner: userId, value: cachedStudy(userId)! }
+      : null,
+  );
   const [storedError, setError] = useState<{
     owner: string;
     value: string;
@@ -31,6 +37,9 @@ export function useAdaptivePlanner(data: Data, userId?: string, ready = true) {
   }, [data]);
   useEffect(() => {
     owner.current = userId;
+    return () => {
+      owner.current = undefined;
+    };
   }, [userId]);
   const refresh = useCallback(
     async (force = false) => {
@@ -61,6 +70,7 @@ export function useAdaptivePlanner(data: Data, userId?: string, ready = true) {
               ) {
                 if (owner.current === userId) {
                   setState({ owner: userId, value: stored });
+                  publishStudy(userId, stored);
                   setError(null);
                 }
                 break;
@@ -88,6 +98,15 @@ export function useAdaptivePlanner(data: Data, userId?: string, ready = true) {
                   },
                 });
                 setError(null);
+                publishStudy(userId, {
+                  ...stored,
+                  days: [
+                    ...stored.days.filter(
+                      (p) => !days.some((d) => d.day === p.day),
+                    ),
+                    ...days,
+                  ],
+                });
               }
               break;
             } catch (e) {
@@ -108,21 +127,52 @@ export function useAdaptivePlanner(data: Data, userId?: string, ready = true) {
   );
   useEffect(() => {
     if (!userId || !ready) return;
-    queueMicrotask(() => void refresh());
+    queueMicrotask(() => {
+      const memory = cachedStudy(userId);
+      if (memory) setState({ owner: userId, value: memory });
+      if (!cachedStudy(userId)) {
+        try {
+          const raw = JSON.parse(
+            localStorage.getItem(`looppilot-study:${userId}`) ?? "null",
+          );
+          if (raw) {
+            const cached = {
+              config: plannerConfigSchema.parse(raw.config),
+              revision: Number(raw.revision),
+              days: dayPlanSchema.array().parse(raw.days),
+            };
+            publishStudy(userId, cached);
+            setState({ owner: userId, value: cached });
+          }
+        } catch {
+          /* Invalid local snapshots are discarded; Supabase is authoritative. */
+        }
+      }
+      void refresh();
+    });
   }, [data, userId, ready, refresh]);
   useEffect(() => {
     if (!userId || !ready) return;
     const interval = setInterval(() => {
-      void refresh();
-    }, 60000);
+      if (document.visibilityState === "visible") void refresh();
+    }, 15000);
     const focus = () => {
       if (document.visibilityState === "visible") void refresh();
     };
     window.addEventListener("focus", focus);
+    window.addEventListener("online", focus);
+    window.addEventListener("looppilot-study-change", focus);
+    const storage = (event: StorageEvent) => {
+      if (event.key === "looppilot-study-signal") focus();
+    };
+    window.addEventListener("storage", storage);
     document.addEventListener("visibilitychange", focus);
     return () => {
       clearInterval(interval);
       window.removeEventListener("focus", focus);
+      window.removeEventListener("online", focus);
+      window.removeEventListener("looppilot-study-change", focus);
+      window.removeEventListener("storage", storage);
       document.removeEventListener("visibilitychange", focus);
     };
   }, [userId, ready, refresh]);

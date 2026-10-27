@@ -86,3 +86,35 @@ export async function editPlannerItem(
   });
   if (error) throw plannerError(error);
 }
+
+export async function liveStudyAction(
+  revision: number,
+  day: string,
+  key: string,
+  action:
+    | "start"
+    | "pause"
+    | "resume"
+    | "finish"
+    | "skip"
+    | "heartbeat"
+    | "break_elapsed",
+  token: string,
+  observedSeconds = 0,
+) {
+  const { error } = await client().rpc("live_study_action", {
+    expected_revision: revision,
+    plan_day: day,
+    item_key: key,
+    action,
+    owner_token: token,
+    observed_seconds: observedSeconds,
+  });
+  if (error) {
+    if (/PGRST20[245]|42883/.test(error.code ?? ""))
+      throw new Error(
+        "Apply the manual migration 202610180003_live_study_companion.sql to enable live sessions.",
+      );
+    throw plannerError(error);
+  }
+}

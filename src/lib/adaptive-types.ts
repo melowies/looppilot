@@ -124,6 +124,19 @@ export const scheduleItemSchema = z
     status: z.enum(["planned", "completed", "skipped", "missed"]),
     pinned: z.boolean(),
     completed_at: z.iso.datetime({ offset: true }).nullable(),
+    live: z
+      .object({
+        state: z.enum(["running", "paused", "finished", "skipped"]),
+        started_at: z.iso.datetime({ offset: true }),
+        heartbeat_at: z.iso.datetime({ offset: true }),
+        elapsed_seconds: z.number().min(0),
+        owner_token: z.string(),
+        attempt_id: z.string().optional(),
+        outcome: z.string().optional(),
+        assistance: z.string().optional(),
+        duration_minutes: z.number().nullable().optional(),
+      })
+      .optional(),
   })
   .refine(
     (i) =>

@@ -322,7 +322,6 @@ test("historical recorded minutes remain unchanged after viewing, running and sa
     correctness: "partial",
     assistance: "hinted",
   });
-  const evidence = JSON.parse(String(store.attempts[0].test_results));
-  expect(evidence.evidence).toBe("Historical manual evidence");
-  expect(evidence.timing).toBeUndefined();
+  // Running default samples must not add cases or rewrite legacy evidence.
+  expect(store.attempts[0].test_results).toBe("Historical manual evidence");
 });

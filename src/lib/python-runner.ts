@@ -56,21 +56,58 @@ import json, traceback
 from typing import List, Optional
 from collections import deque, defaultdict, Counter
 _request = json.loads(_request_json)
+class ListNode:
+    def __init__(self, val=0, next=None):
+        self.val = val
+        self.next = next
+def _integer_array(value):
+    return isinstance(value, list) and len(value) <= 5000 and all(type(v) is int and -5000 <= v <= 5000 for v in value)
+def _list_head(values):
+    if not _integer_array(values):
+        raise ValueError('Input must be an integer array with at most 5000 nodes, values -5000 to 5000, or {"head": [...]}')
+    head = None
+    for value in reversed(values):
+        head = ListNode(value, head)
+    return head
+def _list_values(head):
+    values, seen = [], set()
+    while head is not None:
+        if id(head) in seen:
+            raise ValueError('Cycle detected in returned linked list')
+        if len(values) >= 5000:
+            raise ValueError('Returned linked list exceeds the 5000-node traversal limit')
+        seen.add(id(head))
+        if not hasattr(head, 'val') or not hasattr(head, 'next') or type(head.val) is not int:
+            raise TypeError('Return a ListNode head or None with integer node values')
+        values.append(head.val)
+        head = head.next
+    return values
 def _run_case(case):
     expected = case['expectedOutput']
     try:
         payload = json.loads(case['input'])
-        grid = payload['grid'] if isinstance(payload, dict) else payload
-        if not isinstance(grid, list) or not grid or not all(isinstance(row, list) and len(row) == len(grid[0]) and all(cell in ('0', '1') for cell in row) for row in grid):
-            raise ValueError('Input must be a rectangular JSON grid of strings "0" and "1", or {"grid": [...]}')
         want = json.loads(expected)
-        if type(want) is not int:
-            raise ValueError('Expected output must be a JSON integer')
-        namespace = {'List': List, 'Optional': Optional, 'deque': deque, 'defaultdict': defaultdict, 'Counter': Counter, '__name__': '__main__'}
+        method = _request['method']
+        if method == 'reverseList':
+            argument = _list_head(payload['head'] if isinstance(payload, dict) else payload)
+            if not _integer_array(want):
+                raise ValueError('Expected output must be a JSON integer array with at most 5000 nodes, values -5000 to 5000')
+        elif method == 'numIslands':
+            argument = payload['grid'] if isinstance(payload, dict) else payload
+            if not isinstance(argument, list) or not argument or not all(isinstance(row, list) and len(row) == len(argument[0]) and all(cell in ('0', '1') for cell in row) for row in argument):
+                raise ValueError('Input must be a rectangular JSON grid of strings "0" and "1", or {"grid": [...]}')
+            if type(want) is not int:
+                raise ValueError('Expected output must be a JSON integer')
+        else:
+            raise ValueError('Unsupported Python problem adapter')
+        namespace = {'ListNode': ListNode, 'List': List, 'Optional': Optional, 'deque': deque, 'defaultdict': defaultdict, 'Counter': Counter, '__name__': '__main__'}
         exec(compile(_request['source'], 'solution.py', 'exec'), namespace)
-        actual = namespace['Solution']().numIslands(grid)
+        actual = getattr(namespace['Solution'](), method)(argument)
+        if method == 'reverseList':
+            actual = _list_values(actual)
         output = json.dumps(actual, allow_nan=False)
-        return {'caseId': case['id'], 'expectedOutput': expected, 'actualOutput': output[:12000], 'status': 'Passed' if type(actual) is int and actual == want else 'Wrong Answer'}
+        passed = actual == want and (method == 'reverseList' or type(actual) is int)
+        return {'caseId': case['id'], 'expectedOutput': expected, 'actualOutput': output[:12000], 'status': 'Passed' if passed else 'Wrong Answer'}
     except BaseException:
         return {'caseId': case['id'], 'expectedOutput': expected, 'actualOutput': '', 'status': 'Runtime Error', 'errorMessage': traceback.format_exc()[-12000:]}
 

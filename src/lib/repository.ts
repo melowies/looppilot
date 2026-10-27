@@ -1,5 +1,6 @@
 import { supabase } from "./supabase";
 import { Data, emptyData } from "./domain";
+import { signalEvidenceChange } from "./live-study";
 export async function loadData(): Promise<Data> {
   if (!supabase) return emptyData;
   const results = await Promise.all([
@@ -52,6 +53,7 @@ export async function save(table: string, value: object, id?: string) {
       );
     throw new Error(result.error.message);
   }
+  signalEvidenceChange();
 }
 export async function remove(table: string, id: string) {
   if (!supabase) throw new Error("Connect Supabase first.");
@@ -62,4 +64,5 @@ export async function remove(table: string, id: string) {
     .select("id")
     .single();
   if (r.error) throw new Error(r.error.message);
+  signalEvidenceChange();
 }

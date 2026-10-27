@@ -713,6 +713,10 @@
   .practice-mobile-tabs {
     display: block;
     margin-bottom: 12px;
+    position: sticky;
+    top: 0;
+    z-index: 11;
+    background: var(--bg);
   }
   .practice-desktop-tabs,
   .practice-splitter {
@@ -755,6 +759,7 @@
   }
   .practice-heading {
     align-items: flex-start;
+    position: static;
   }
   .practice-heading .button-group {
     width: 100%;
@@ -3106,5 +3111,178 @@ a.secondary:hover {
     animation: none !important;
     transition: none !important;
     scroll-behavior: auto !important;
+  }
+}
+/* Reserve scrollable space for the persistent companion, including in the IDE. */
+.has-study-companion .content {
+  padding-bottom: calc(var(--companion-space, 100px) + 34px);
+}
+.has-study-companion .practice-content {
+  height: calc(
+    100dvh - var(--practice-top, 100px) - var(--companion-space, 100px) - 16px
+  );
+  max-height: calc(
+    100dvh - var(--practice-top, 100px) - var(--companion-space, 100px) - 16px
+  );
+  overflow-y: auto;
+  padding-bottom: 0;
+}
+@media (min-width: 761px) {
+  .practice-heading {
+    margin-bottom: 10px;
+  }
+  .practice-heading h1 {
+    margin-top: 4px;
+  }
+  .practice-toolbar > .field,
+  .practice-editor-toolbar .field {
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+  }
+  .practice-editor-toolbar .field > span {
+    white-space: nowrap;
+  }
+  .practice-editor-toolbar select {
+    width: auto;
+  }
+  .has-study-companion .coding-practice {
+    height: 100%;
+    min-height: 540px;
+    display: flex;
+    flex-direction: column;
+  }
+  .has-study-companion .practice-grid {
+    flex: 1;
+    min-height: 360px;
+    height: auto;
+  }
+  .practice-right {
+    grid-template-rows: minmax(200px, var(--editor-height)) 10px minmax(
+        110px,
+        1fr
+      );
+  }
+}
+.panel-body {
+  padding: 0 26px 24px;
+}
+.editor-form > .live-study-editor-status {
+  display: block;
+  margin-top: 0;
+  padding: 0 0 16px;
+  border-top: 0;
+  border-bottom: 1px solid var(--border);
+}
+.live-study-editor-status > strong {
+  display: block;
+  font-size: 15px;
+}
+.live-study-editor-status .companion-actions {
+  margin-bottom: 0;
+}
+.study-companion {
+  position: fixed;
+  right: 22px;
+  bottom: 16px;
+  z-index: 35;
+  width: min(370px, calc(100vw - 32px));
+  border: 1px solid var(--border, #dfc3ce);
+  border-radius: 18px;
+  background: var(--paper, #fffaf4);
+  box-shadow: 0 6px 28px #68263d26;
+  padding: 12px 15px;
+  max-height: min(520px, 70dvh);
+  overflow-y: auto;
+  font-size: 14px;
+}
+.companion-toggle {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  text-align: left;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  border: 0;
+}
+.companion-toggle > span:first-child {
+  flex: 1;
+  min-width: 0;
+}
+.companion-toggle strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-heading);
+  font-size: 18px;
+  font-weight: 400;
+}
+.companion-toggle small {
+  display: block;
+  color: var(--muted, #785765);
+}
+.companion-clock {
+  font-variant-numeric: tabular-nums;
+}
+.study-companion p {
+  margin: 9px 0;
+}
+.study-companion progress {
+  width: 100%;
+  accent-color: #aa526f;
+  height: 6px;
+}
+.companion-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin: 12px 0;
+}
+.companion-actions button {
+  min-height: 38px;
+}
+.companion-help,
+.companion-next {
+  font-size: 12px;
+  color: var(--muted, #785765);
+}
+.companion-notice:not(:empty) {
+  font-size: 12px;
+  margin-top: 8px;
+  color: #85415c;
+}
+.canonical-focus h3 {
+  font-family: var(--font-heading);
+  font-weight: 400;
+  font-size: 25px;
+}
+@media (max-width: 720px) {
+  .study-companion {
+    right: 10px;
+    left: 10px;
+    width: auto;
+    bottom: calc(72px + env(safe-area-inset-bottom));
+    padding: 10px 13px;
+    max-height: 55dvh;
+  }
+  .has-study-companion .content {
+    padding-bottom: calc(
+      var(--companion-space, 100px) + 100px + env(safe-area-inset-bottom)
+    );
+  }
+  .has-study-companion .practice-content {
+    height: auto;
+    max-height: calc(
+      100dvh - var(--practice-top, 90px) - 72px - env(safe-area-inset-bottom) -
+        var(--companion-space, 100px) - 10px
+    );
+    padding-bottom: 24px;
+  }
+  .companion-toggle strong {
+    font-size: 17px;
   }
 }
